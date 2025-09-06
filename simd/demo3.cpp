@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <iterator>
+#include <sys/types.h>
 #include <xmmintrin.h>
 #pragma GCC target("avx2")
 #pragma GCC optimize("O3")
@@ -93,37 +94,66 @@ __m128 abs_ps(__m128 x) {
     return _mm_andnot_ps(sign_mask, x); // (~a) & b
 }
 
-template <>
-EIGEN_STRONG_INLINE Packet4f pcmp_le(const Packet4f& a, const Packet4f& b) {
-  return _mm_cmple_ps(a, b); // a <= b
-}
-template <>
-EIGEN_STRONG_INLINE Packet4f pcmp_lt(const Packet4f& a, const Packet4f& b) {
-  return _mm_cmplt_ps(a, b); // a < b
-}
-template <>
-EIGEN_STRONG_INLINE Packet4f pcmp_lt_or_nan(const Packet4f& a, const Packet4f& b) {
-  return _mm_cmpnge_ps(a, b);
-}
-template <>
-EIGEN_STRONG_INLINE Packet4f pcmp_eq(const Packet4f& a, const Packet4f& b) {
-  return _mm_cmpeq_ps(a, b); // a == b
+Packet4f pabs(const Packet4f& a) {
+  const __m128i mask = _mm_setr_epi32(0x7FFFFFFF, 0x7FFFFFFF, 0x7FFFFFFF, 0x7FFFFFFF);
+  return _mm_castsi128_ps(_mm_and_si128(mask, _mm_castps_si128(a)));
 }
 
-template <>
-EIGEN_STRONG_INLINE Packet4f pcmp_gt(const Packet4f& a, const Packet4f& b) {
-  return _mm_cmpgt_ps(a, b);  // a > b
+Packet4f preverse(const Packet4f& a) {
+  return _mm_shuffle_ps(a, a, 0x1B);
 }
 
-template <>
-EIGEN_STRONG_INLINE Packet4f pcmp_ge(const Packet4f& a, const Packet4f& b) {
-  return _mm_cmpge_ps(a, b);  // a >= b
+float pfirst(const Packet4f& a) {
+  return _mm_cvtss_f32(a);
 }
 
-template <>
-EIGEN_STRONG_INLINE Packet4f pcmp_ne(const Packet4f& a, const Packet4f& b) {
-  return _mm_cmpneq_ps(a, b);  // a != b
+Packet4f pgather(const float* from, uint stride) {
+  return _mm_set_ps(from[3 * stride], from[2 * stride], from[1 * stride], from[0 * stride]);
 }
+
+void pscatter(float* to, const Packet4f& from, uint stride) {
+  to[stride * 0] = pfirst(from);
+  to[stride * 1] = pfirst(_mm_shuffle_ps(from, from, 1));
+  to[stride * 2] = pfirst(_mm_shuffle_ps(from, from, 2));
+  to[stride * 3] = pfirst(_mm_shuffle_ps(from, from, 3));
+
+  // _mm_shuffle_ps(from, from, 1) 的作用：
+  // 将向量中的第1个元素移动到第0位
+  // pfirst() 提取第0位的元素
+  // 相当于提取原向量的第1个元素
+}
+
+// template <>
+// EIGEN_STRONG_INLINE Packet4f pcmp_le(const Packet4f& a, const Packet4f& b) {
+//   return _mm_cmple_ps(a, b); // a <= b
+// }
+// template <>
+// EIGEN_STRONG_INLINE Packet4f pcmp_lt(const Packet4f& a, const Packet4f& b) {
+//   return _mm_cmplt_ps(a, b); // a < b
+// }
+// template <>
+// EIGEN_STRONG_INLINE Packet4f pcmp_lt_or_nan(const Packet4f& a, const Packet4f& b) {
+//   return _mm_cmpnge_ps(a, b);
+// }
+// template <>
+// EIGEN_STRONG_INLINE Packet4f pcmp_eq(const Packet4f& a, const Packet4f& b) {
+//   return _mm_cmpeq_ps(a, b); // a == b
+// }
+
+// template <>
+// EIGEN_STRONG_INLINE Packet4f pcmp_gt(const Packet4f& a, const Packet4f& b) {
+//   return _mm_cmpgt_ps(a, b);  // a > b
+// }
+
+// template <>
+// EIGEN_STRONG_INLINE Packet4f pcmp_ge(const Packet4f& a, const Packet4f& b) {
+//   return _mm_cmpge_ps(a, b);  // a >= b
+// }
+
+// template <>
+// EIGEN_STRONG_INLINE Packet4f pcmp_ne(const Packet4f& a, const Packet4f& b) {
+//   return _mm_cmpneq_ps(a, b);  // a != b
+// }
 
 void transpose_4x4(const float matrix[][4], float* x, float* y, float* z, float* w) {
     Packet4f row0 = load_packet(matrix[0]);  // [a00, a01, a02, a03]
@@ -238,5 +268,14 @@ int main() {
 
   __m128 t13 = abs_ps(ta);
   print_vec4f(t13);
+
+  __m128 t14 = pabs(ta);
+  print_vec4f(t14);
+
+  __m128 t15 = preverse(t14);
+  print_vec4f(t15);
+
+  std::cout << "t14 first: " << pfirst(t14) << " t15 first: " << pfirst(t15) << std::endl;
+
   return 0;
 }
