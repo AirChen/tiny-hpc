@@ -1,3 +1,5 @@
+#include <cstdlib>
+#include <stdalign.h>
 #include <immintrin.h>
 #include <vector>
 #include <iostream>
@@ -191,6 +193,49 @@ void compute_distances_2d_simd_8f(const std::vector<Point2D>& points,
     }
 }
 
+void compute_distances_2d_simd_8f(const std::vector<Point2D>& points, 
+                               float distances[]) {
+    size_t n = points.size();
+    size_t i = 0;
+    // 处理8个点对为一组
+    for (; i + 8 < n; i += 8) {
+        // 方法1：使用两个__m128加载x坐标
+        __m256 x1 = _mm256_set_ps(points[i+7].x, points[i+6].x, points[i+5].x, points[i+4].x, points[i+3].x, points[i+2].x, 
+                              points[i+1].x, points[i].x);
+        __m256 x2 = _mm256_set_ps(points[i+8].x, points[i+7].x, points[i+6].x, points[i+5].x, points[i+4].x, points[i+3].x, 
+                              points[i+2].x, points[i+1].x);
+        
+        __m256 y1 = _mm256_set_ps(points[i+7].y, points[i+6].y, points[i+5].y, points[i+4].y, points[i+3].y, points[i+2].y, 
+                              points[i+1].y, points[i].y);
+        __m256 y2 = _mm256_set_ps(points[i+8].y, points[i+7].y, points[i+6].y, points[i+5].y, points[i+4].y, points[i+3].y, 
+                              points[i+2].y, points[i+1].y);
+        
+        // 计算差值
+        __m256 dx = _mm256_sub_ps(x2, x1);
+        __m256 dy = _mm256_sub_ps(y2, y1);
+        
+        // 计算平方
+        __m256 dx2 = _mm256_mul_ps(dx, dx);
+        __m256 dy2 = _mm256_mul_ps(dy, dy);
+        
+        // 计算距离平方
+        __m256 dist2 = _mm256_add_ps(dx2, dy2);
+        
+        // 计算平方根
+        __m256 dist = _mm256_sqrt_ps(dist2);
+        
+        // 存储结果
+        _mm256_store_ps(&distances[i], dist); // 不对齐版本 __256_soreu_ps 
+    }
+    
+    // 处理剩余的点
+    for (; i < n - 1; ++i) {
+        float dx = points[i+1].x - points[i].x;
+        float dy = points[i+1].y - points[i].y;
+        distances[i] = std::sqrt(dx * dx + dy * dy);
+    }
+}
+
 // ============================================================================
 // 3D点距离计算
 // ============================================================================
@@ -266,23 +311,31 @@ void compute_distances_3d_simd(const std::vector<Point3D>& points,
 
 // SOA版本的点数据存储
 struct Points2D_SOA {
-    std::vector<float> x, y;
+    float* x;
+    float* y;
+    size_t capcity{0};
     
     void resize(size_t n) {
-        x.resize(n);
-        y.resize(n);
+        x = (float*)aligned_alloc(64, n * sizeof(float));
+        y = (float*)aligned_alloc(64, n * sizeof(float));
     }
     
     void push_back(float px, float py) {
-        x.push_back(px);
-        y.push_back(py);
+        x[capcity] = px;
+        y[capcity] = py;
+        capcity++;
+    }
+
+    ~Points2D_SOA() {
+        free(x);
+        free(y);
     }
 };
 
 // SOA版本 - 更高效的SIMD计算
 void compute_distances_2d_soa_simd(const Points2D_SOA& points, 
                                    std::vector<float>& distances) {
-    size_t n = points.x.size();
+    size_t n = points.capcity;
     distances.resize(n - 1);
     
     size_t i = 0;
@@ -320,7 +373,7 @@ void compute_distances_2d_soa_simd(const Points2D_SOA& points,
 // SOA版本 - 更高效的SIMD计算 8 float
 void compute_distances_2d_soa_simd_8f(const Points2D_SOA& points, 
                                    std::vector<float>& distances) {
-    size_t n = points.x.size();
+    size_t n = points.capcity;
     distances.resize(n - 1);
     
     size_t i = 0;
@@ -351,6 +404,77 @@ void compute_distances_2d_soa_simd_8f(const Points2D_SOA& points,
     for (; i < n - 1; ++i) {
         float dx = points.x[i+1] - points.x[i];
         float dy = points.y[i+1] - points.y[i];
+        distances[i] = std::sqrt(dx * dx + dy * dy);
+    }
+}
+
+void compute_distances_2d_soa_simd_8f(const Points2D_SOA& points, 
+                                   float* distances) {
+    size_t n = points.capcity;
+    size_t i = 0;
+    // 一次处理8个点对
+    for (; i + 8 < n; i += 8) {
+        // 直接加载连续的坐标数据
+        __m256 x1 = _mm256_loadu_ps(&points.x[i]);      // x[i], x[i+1], x[i+2], x[i+3]
+        __m256 x2 = _mm256_loadu_ps(&points.x[i + 1]);  // x[i+1], x[i+2], x[i+3], x[i+4]
+        
+        __m256 y1 = _mm256_loadu_ps(&points.y[i]);      // y[i], y[i+1], y[i+2], y[i+3]
+        __m256 y2 = _mm256_loadu_ps(&points.y[i + 1]);  // y[i+1], y[i+2], y[i+3], y[i+4]
+        
+        // 计算距离
+        __m256 dx = _mm256_sub_ps(x2, x1);
+        __m256 dy = _mm256_sub_ps(y2, y1);
+        
+        __m256 dx2 = _mm256_mul_ps(dx, dx);
+        __m256 dy2 = _mm256_mul_ps(dy, dy);
+        
+        __m256 dist2 = _mm256_add_ps(dx2, dy2);
+        __m256 dist = _mm256_sqrt_ps(dist2);
+        
+        // 存储结果
+        _mm256_store_ps(&distances[i], dist);
+    }
+    
+    // 处理剩余的点
+    for (; i < n - 1; ++i) {
+        float dx = points.x[i+1] - points.x[i];
+        float dy = points.y[i+1] - points.y[i];
+        distances[i] = std::sqrt(dx * dx + dy * dy);
+    }
+}
+void compute_distances_2d_soa_simd_8f(const float* input_x, const float* input_y, size_t size_n, 
+                                   float* distances) {
+    size_t n = size_n;
+    size_t i = 0;
+    // 一次处理8个点对
+    for (; i + 8 < n; i += 8) {
+        // 直接加载连续的坐标数据
+        __m256 x1 = _mm256_load_ps(&input_x[i]);      // x[i], x[i+1], x[i+2], x[i+3]
+        __m256 x2 = _mm256_load_ps(&input_x[i]);  // x[i+1], x[i+2], x[i+3], x[i+4]
+        
+        __m256 y1 = _mm256_load_ps(&input_y[i]);      // y[i], y[i+1], y[i+2], y[i+3]
+        __m256 y2 = _mm256_load_ps(&input_y[i]);  // y[i+1], y[i+2], y[i+3], y[i+4]
+
+        // 这个地方使用对齐 不能 + 1 了
+        
+        // 计算距离
+        __m256 dx = _mm256_sub_ps(x2, x1);
+        __m256 dy = _mm256_sub_ps(y2, y1);
+        
+        __m256 dx2 = _mm256_mul_ps(dx, dx);
+        __m256 dy2 = _mm256_mul_ps(dy, dy);
+        
+        __m256 dist2 = _mm256_add_ps(dx2, dy2);
+        __m256 dist = _mm256_sqrt_ps(dist2);
+        
+        // 存储结果
+        _mm256_store_ps(&distances[i], dist);
+    }
+    
+    // 处理剩余的点
+    for (; i < n - 1; ++i) {
+        float dx = input_x[i+1] - input_x[i];
+        float dy = input_y[i+1] - input_y[i];
         distances[i] = std::sqrt(dx * dx + dy * dy);
     }
 }
@@ -467,14 +591,23 @@ void benchmark_distance_calculation() {
     // 转换为SOA格式
     Points2D_SOA points_soa;
     points_soa.resize(num_points);
+    float* input_x = (float*)aligned_alloc(64, num_points * sizeof(float));
+    float* input_y = (float*)aligned_alloc(64, num_points * sizeof(float));
     for (size_t i = 0; i < num_points; ++i) {
-        points_soa.x[i] = points[i].x;
-        points_soa.y[i] = points[i].y;
+        points_soa.push_back(points[i].x, points[i].y);
+        
+        input_x[i] = points[i].x;
+        input_y[i] = points[i].y;
     }
     
     std::vector<float> distances_scalar, distances_simd, distances_soa;
     std::vector<float> distances_simd_8f, distances_soa_8f;
-    
+    // float* distances_simd_8f_ori = (float*)calloc(num_points, sizeof(float));
+    // float* distances_soa_8f_ori = (float*)calloc(num_points, sizeof(float));
+    float* distances_simd_8f_ori = (float*)aligned_alloc(64, num_points * sizeof(float));
+    float* distances_soa_8f_ori = (float*)aligned_alloc(64, num_points * sizeof(float));
+    float* distances_soa_8f_ori_opt = (float*)aligned_alloc(64, num_points * sizeof(float));
+
     // 测试标量版本
     auto start = std::chrono::high_resolution_clock::now();
     compute_distances_2d_scalar(points, distances_scalar);
@@ -493,6 +626,11 @@ void benchmark_distance_calculation() {
     end = std::chrono::high_resolution_clock::now();
     auto simd_8f_time = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
     
+    start = std::chrono::high_resolution_clock::now();
+    compute_distances_2d_simd_8f(points, distances_simd_8f_ori);
+    end = std::chrono::high_resolution_clock::now();
+    auto simd_8f_ori_time = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+    
     // 测试SOA SIMD版本
     start = std::chrono::high_resolution_clock::now();
     compute_distances_2d_soa_simd(points_soa, distances_soa);
@@ -505,6 +643,16 @@ void benchmark_distance_calculation() {
     end = std::chrono::high_resolution_clock::now();
     auto soa_8f_time = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
     
+    start = std::chrono::high_resolution_clock::now();
+    compute_distances_2d_soa_simd_8f(points_soa, distances_soa_8f_ori);
+    end = std::chrono::high_resolution_clock::now();
+    auto soa_8f_ori_time = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+    
+    start = std::chrono::high_resolution_clock::now();
+    compute_distances_2d_soa_simd_8f(input_x, input_y, num_points, distances_soa_8f_ori_opt);
+    end = std::chrono::high_resolution_clock::now();
+    auto soa_8f_ori_opt_time = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
+    
     // 验证结果一致性
     bool results_match = true;
     for (size_t i = 0; i < distances_scalar.size() && i < 1000; ++i) {
@@ -516,11 +664,23 @@ void benchmark_distance_calculation() {
             results_match = false;
             break;
         }
+        if (std::abs(distances_scalar[i] - distances_simd_8f_ori[i]) > 1e-5f) {
+            results_match = false;
+            break;
+        }
         if (std::abs(distances_scalar[i] - distances_soa[i]) > 1e-5f) {
             results_match = false;
             break;
         }
         if (std::abs(distances_scalar[i] - distances_soa_8f[i]) > 1e-5f) {
+            results_match = false;
+            break;
+        }
+        if (std::abs(distances_scalar[i] - distances_soa_8f_ori[i]) > 1e-5f) {
+            results_match = false;
+            break;
+        }
+        if (std::abs(distances_scalar[i] - distances_soa_8f_ori_opt[i]) > 1e-5f) {
             results_match = false;
             break;
         }
@@ -531,13 +691,25 @@ void benchmark_distance_calculation() {
     std::cout << "Scalar version:   " << scalar_time.count() << " μs\n";
     std::cout << "SIMD version:     " << simd_time.count() << " μs\n";
     std::cout << "SIMD 8f version:     " << simd_8f_time.count() << " μs\n";
+    std::cout << "SIMD 8f ori version:     " << simd_8f_ori_time.count() << " μs\n";
     std::cout << "SOA SIMD version: " << soa_time.count() << " μs\n";
     std::cout << "SOA SIMD 8f version: " << soa_8f_time.count() << " μs\n";
+    std::cout << "SOA SIMD 8f ori version: " << soa_8f_ori_time.count() << " μs\n";
+    std::cout << "SOA SIMD 8f ori opt version: " << soa_8f_ori_opt_time.count() << " μs\n";
     std::cout << "SIMD speedup:     " << (double)scalar_time.count() / simd_time.count() << "x\n";
     std::cout << "SOA speedup:      " << (double)scalar_time.count() / soa_time.count() << "x\n";
     std::cout << "SIMD 8f speedup:     " << (double)scalar_time.count() / simd_8f_time.count() << "x\n";
     std::cout << "SOA 8f speedup:      " << (double)scalar_time.count() / soa_8f_time.count() << "x\n";
+    std::cout << "SIMD 8f ori speedup:     " << (double)scalar_time.count() / simd_8f_ori_time.count() << "x\n";
+    std::cout << "SOA 8f ori speedup:      " << (double)scalar_time.count() / soa_8f_ori_time.count() << "x\n";
     std::cout << "Results match:    " << (results_match ? "Yes" : "No") << "\n\n";
+
+    free(distances_simd_8f_ori);
+    free(distances_soa_8f_ori);
+    free(distances_soa_8f_ori_opt);
+
+    free(input_x);
+    free(input_y);
 }
 
 int main() {
